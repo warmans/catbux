@@ -4,6 +4,9 @@ import (
 	"time"
 	"crypto/sha256"
 	"fmt"
+	"encoding/base64"
+	"log"
+	"sync"
 )
 
 var Genesis = &Block{Index: 0, Hash: "genesis", Timestamp: time.Time{}}
@@ -22,7 +25,7 @@ func Hash(b *Block) string {
 	fmt.Fprintf(hash, "%s", b.PrevHash)
 	fmt.Fprintf(hash, "%s", b.Timestamp.Format(time.RFC3339Nano))
 	fmt.Fprintf(hash, "%s", b.Data)
-	return string(hash.Sum([]byte(""))[:])
+	return base64.URLEncoding.EncodeToString(hash.Sum(nil))
 }
 
 func IsValidBlock(newBlock, prevBlock *Block) error {
@@ -38,19 +41,23 @@ func IsValidBlock(newBlock, prevBlock *Block) error {
 	return nil
 }
 
-func NewBlockchain() *Blockchain {
-	return &Blockchain{chain: []*Block{Genesis}}
+func NewBlockchain(peers *Peers) *Blockchain {
+	return &Blockchain{chain: []*Block{Genesis}, peers: peers}
 }
 
 type Blockchain struct {
-	chain []*Block `json:"chain"`
+	chain     []*Block
+	peers     *Peers
+	sync.RWMutex
 }
 
 func (c *Blockchain) Last() *Block {
+	c.RLock()
+	defer c.RUnlock()
 	return c.chain[len(c.chain)-1]
 }
 
-func (c *Blockchain) Append(data string) {
+func (c *Blockchain) Append(data string) (error) {
 	newBlock := &Block{
 		Index:     int64(len(c.chain)),
 		PrevHash:  c.Last().Hash,
@@ -59,10 +66,21 @@ func (c *Blockchain) Append(data string) {
 	}
 	newBlock.Hash = Hash(newBlock)
 
-	c.chain = append(c.chain, newBlock)
+	c.writeLock(func() {
+		if err := IsValidBlock(newBlock, c.chain[len(c.chain)-1]); err != nil {
+			log.Printf("failed to add block: %s", err.Error())
+			return
+		}
+		c.chain = append(c.chain, newBlock)
+	})
+	c.peers.Broadcast(newBlock)
+	return nil
 }
 
 func (c *Blockchain) IsValid() error {
+	c.RLock()
+	defer c.RUnlock()
+
 	if len(c.chain) == 0 {
 		return fmt.Errorf("genesis block was missing")
 	}
@@ -77,8 +95,28 @@ func (c *Blockchain) IsValid() error {
 	return nil
 }
 
+func (c *Blockchain) Snapshot() []Block {
+	c.RLock()
+	defer c.RUnlock()
+
+	snapshot := make([]Block, len(c.chain))
+	for k, b := range c.chain {
+		snapshot[k] = *b
+	}
+	return snapshot
+}
+
 func (c *Blockchain) Len() int {
+	c.RLock()
+	defer c.RUnlock()
+
 	return len(c.chain)
+}
+
+func (c *Blockchain) writeLock(f func()) {
+	c.Lock()
+	defer c.Unlock()
+	f()
 }
 
 func (c *Blockchain) Replace(chain *Blockchain) error {
@@ -88,7 +126,5 @@ func (c *Blockchain) Replace(chain *Blockchain) error {
 	if c.Len() < chain.Len() {
 		c.chain = chain.chain
 	}
-
-	//todo: broadcast new chain
 	return nil
 }

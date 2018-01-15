@@ -3,24 +3,26 @@ package api
 import (
 	"net/http"
 	"encoding/json"
-	"github.com/warmans/trinkgeld/pkg/node"
 	"net"
 	"log"
+	"io/ioutil"
+	"github.com/warmans/catbux/pkg/blocks"
 )
 
-func New(addr string, node *node.Node) *API {
-	return &API{addr: addr, node: node}
+func New(addr string, chain *blocks.Blockchain) *API {
+	return &API{addr: addr, chain: chain}
 }
 
 type API struct {
 	addr string
-	node *node.Node
 	ln   net.Listener
+	chain *blocks.Blockchain
 }
 
 func (s *API) Start() error {
 
-	http.Handle("/join", http.HandlerFunc(s.handleJoin))
+	http.Handle("/blocks", http.HandlerFunc(s.handleBlocks))
+	http.Handle("/mine", http.HandlerFunc(s.handleMine))
 
 	go func() {
 		err := http.ListenAndServe(s.addr, nil)
@@ -31,36 +33,28 @@ func (s *API) Start() error {
 	return nil
 }
 
-
-
 // Close closes the service.
 func (s *API) Close() {
 	s.ln.Close()
 	return
 }
 
-func (s *API) handleJoin(w http.ResponseWriter, r *http.Request) {
-	m := map[string]string{}
-	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
+func (s *API) handleBlocks(w http.ResponseWriter, r *http.Request) {
+	err := json.NewEncoder(w).Encode(s.chain.Snapshot())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (s *API) handleMine(w http.ResponseWriter, r *http.Request) {
+	data, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if len(m) != 2 {
-		w.WriteHeader(http.StatusBadRequest)
+	if err := s.chain.Append(string(data)); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	remoteAddr, ok := m["addr"]
-	if !ok {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	nodeID, ok := m["id"]
-	if !ok {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	if err := s.node.Join(nodeID, remoteAddr); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
+	s.handleBlocks(w, r)
 }
