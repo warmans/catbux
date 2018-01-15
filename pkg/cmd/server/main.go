@@ -1,5 +1,7 @@
 package main
 
+//based on https://github.com/otoolep/hraftd and http://lhartikk.github.io/jekyll/update/2017/07/14/chapter1.html
+
 import (
 	"flag"
 	"fmt"
