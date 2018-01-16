@@ -4,15 +4,18 @@ package main
 
 import (
 	"flag"
-	"os"
+	"fmt"
 	"log"
-	"os/signal"
 	"net"
-	"github.com/warmans/catbux/pkg/api"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+
+	"github.com/hashicorp/serf/serf"
 	"github.com/satori/go.uuid"
 	"github.com/warmans/catbux/pkg/blocks"
-	"github.com/hashicorp/memberlist"
-	"strings"
+	"github.com/warmans/catbux/pkg/server"
 )
 
 const (
@@ -20,44 +23,62 @@ const (
 )
 
 var (
-	httpBind     = flag.String("http-bind", DefaultHTTPBind, "Set the HTTP bind address")
-	seedNodeList = flag.String("seed-nodes", "", "address of an existing cluster node")
-	nodeID       = flag.String("id", "", "Node ID (leaving blank will generate one)")
+	httpBindAddr          = flag.String("http-bind", DefaultHTTPBind, "Set the HTTP bind address")
+	clusterBindAddr       = flag.String("cluster-bind-addr", "127.0.0.1", "Set the cluster bind address (if port omitted one is generated)")
+	clusterAdvertisedAddr = flag.String("cluster-advertise-addr", "", "this is the address other nodes can contact this one on. If blank same as bind-addr")
+	seedNodeList          = flag.String("cluster-seed-nodes", "", "address of an existing cluster node(s)")
+	nodeID                = flag.String("cluster-node-id", "", "Identifier for the node (leaving blank will generate one)")
 )
 
 func main() {
 	flag.Parse()
 
+	cluster := makeCluster()
+	defer cluster.Close()
+
+	srv := server.New(*httpBindAddr, blocks.NewBlockchain(), cluster)
+	if err := srv.Start(); err != nil {
+		log.Fatal("server failed: " + err.Error())
+	}
+
+	terminate := make(chan os.Signal, 1)
+	signal.Notify(terminate, os.Interrupt)
+	<-terminate
+	log.Println("exiting...")
+}
+
+func makeCluster() *server.Cluster {
 	if *nodeID == "" {
 		*nodeID = mustGetNodeID()
 	}
+
+	//sort out all the hosts/ports
+	bindHost, bindPort := mustParseAddr(*clusterBindAddr, mustGetFreePort())
+	if *clusterAdvertisedAddr == "" {
+		*clusterAdvertisedAddr = fmt.Sprintf("%s:%d", bindHost, bindPort)
+	}
+	advertiseHost, advertisePort := mustParseAddr(*clusterBindAddr, bindPort)
+
+	conf := serf.DefaultConfig()
+	conf.Init()
+	conf.NodeName = *nodeID
+	conf.MemberlistConfig.BindAddr = bindHost
+	conf.MemberlistConfig.BindPort = bindPort
+	conf.MemberlistConfig.AdvertiseAddr = advertiseHost
+	conf.MemberlistConfig.AdvertisePort = advertisePort
 
 	seedNodes := []string{}
 	if *seedNodeList != "" {
 		seedNodes = strings.Split(*seedNodeList, ",")
 	}
 
-	conf := memberlist.DefaultLocalConfig()
-	conf.Name = *nodeID
-	conf.BindPort = mustGetFreePort()
-	conf.AdvertisePort = conf.BindPort
-
-	peers, err := blocks.NewPeers(conf, seedNodes...)
+	cluster, err := server.NewCluster(conf, seedNodes...)
 	if err != nil {
-		log.Fatalf("failed to start peer service: %s", err.Error())
+		log.Fatalf("Failed to start cluster service: %s", err.Error())
 	}
-	log.Printf("Peer service started on %s:%d", conf.BindAddr, conf.BindPort)
+	log.Printf("Cluster created on: %s:%d", conf.MemberlistConfig.BindAddr, conf.MemberlistConfig.BindPort)
 
-	h := api.New(*httpBind, blocks.NewBlockchain(peers))
-	if err := h.Start(); err != nil {
-		log.Fatalf("failed to start HTTP service: %s", err.Error())
-	}
-	log.Printf("Http started on %s", *httpBind)
-
-	terminate := make(chan os.Signal, 1)
-	signal.Notify(terminate, os.Interrupt)
-	<-terminate
-	log.Println("exiting...")
+	return cluster
 }
 
 func mustGetFreePort() int {
@@ -76,4 +97,22 @@ func mustGetFreePort() int {
 
 func mustGetNodeID() string {
 	return uuid.Must(uuid.NewV4()).String()
+}
+
+func mustParseAddr(addr string, defaultPort int) (string, int) {
+	parts := strings.Split(addr, ":")
+	if len(parts) == 1 {
+		return addr, 0
+	}
+	if len(parts) == 2 {
+		port, err := strconv.Atoi(parts[1])
+		if err != nil {
+			panic(fmt.Sprintf("failed to parse port in %s: %s", addr, err.Error()))
+		}
+		if port == 0 {
+			port = defaultPort
+		}
+		return parts[0], port
+	}
+	panic("provided address " + addr + " was invalid. should be host:port or just host to generate a random port")
 }

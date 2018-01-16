@@ -1,12 +1,11 @@
 package blocks
 
 import (
-	"time"
 	"crypto/sha256"
-	"fmt"
 	"encoding/base64"
-	"log"
+	"fmt"
 	"sync"
+	"time"
 )
 
 var Genesis = &Block{Index: 0, Hash: "genesis", Timestamp: time.Time{}}
@@ -41,67 +40,80 @@ func IsValidBlock(newBlock, prevBlock *Block) error {
 	return nil
 }
 
-func NewBlockchain(peers *Peers) *Blockchain {
-	return &Blockchain{chain: []*Block{Genesis}, peers: peers}
+func NewBlockchain() *Blockchain {
+	return &Blockchain{Blocks: []*Block{Genesis}}
 }
 
 type Blockchain struct {
-	chain     []*Block
-	peers     *Peers
+	Blocks []*Block `json:"blocks"`
 	sync.RWMutex
 }
 
 func (c *Blockchain) Last() *Block {
 	c.RLock()
 	defer c.RUnlock()
-	return c.chain[len(c.chain)-1]
+	return c.Blocks[len(c.Blocks)-1]
 }
 
-func (c *Blockchain) Append(data string) (error) {
+func (c *Blockchain) NewBlock(data string) (*Block, error) {
 	newBlock := &Block{
-		Index:     int64(len(c.chain)),
+		Index:     int64(len(c.Blocks)),
 		PrevHash:  c.Last().Hash,
 		Timestamp: time.Now(),
 		Data:      data,
 	}
 	newBlock.Hash = Hash(newBlock)
 
-	c.writeLock(func() {
-		if err := IsValidBlock(newBlock, c.chain[len(c.chain)-1]); err != nil {
-			log.Printf("failed to add block: %s", err.Error())
-			return
+	err := c.writeLock(func() error {
+		if err := IsValidBlock(newBlock, c.Blocks[len(c.Blocks)-1]); err != nil {
+			return err
 		}
-		c.chain = append(c.chain, newBlock)
+		c.Blocks = append(c.Blocks, newBlock)
+		return nil
 	})
-	c.peers.Broadcast(newBlock)
-	return nil
+	if err != nil {
+		return nil, err
+	}
+	return newBlock, nil
+}
+
+func (c *Blockchain) Append(block *Block) error {
+	err := c.writeLock(func() error {
+		if err := IsValidBlock(block, c.Blocks[len(c.Blocks)-1]); err != nil {
+			return err
+		}
+		c.Blocks = append(c.Blocks, block)
+		return nil
+	})
+	return err
 }
 
 func (c *Blockchain) IsValid() error {
 	c.RLock()
 	defer c.RUnlock()
 
-	if len(c.chain) == 0 {
+	if len(c.Blocks) == 0 {
 		return fmt.Errorf("genesis block was missing")
 	}
-	if c.chain[0] != Genesis {
+	if c.Blocks[0].Hash != Genesis.Hash {
 		return fmt.Errorf("genesis block was unexpected: %+v", Genesis)
 	}
-	for k := 1; k < len(c.chain); k++ {
-		if err := IsValidBlock(c.chain[k], c.chain[k-1]); err != nil {
+	for k := 1; k < len(c.Blocks); k++ {
+		if err := IsValidBlock(c.Blocks[k], c.Blocks[k-1]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (c *Blockchain) Snapshot() []Block {
+func (c *Blockchain) Snapshot() *Blockchain {
 	c.RLock()
 	defer c.RUnlock()
 
-	snapshot := make([]Block, len(c.chain))
-	for k, b := range c.chain {
-		snapshot[k] = *b
+	snapshot := &Blockchain{Blocks: make([]*Block, len(c.Blocks))}
+	for k, b := range c.Blocks {
+		deref := *b
+		snapshot.Blocks[k] = &deref
 	}
 	return snapshot
 }
@@ -110,13 +122,7 @@ func (c *Blockchain) Len() int {
 	c.RLock()
 	defer c.RUnlock()
 
-	return len(c.chain)
-}
-
-func (c *Blockchain) writeLock(f func()) {
-	c.Lock()
-	defer c.Unlock()
-	f()
+	return len(c.Blocks)
 }
 
 func (c *Blockchain) Replace(chain *Blockchain) error {
@@ -124,7 +130,13 @@ func (c *Blockchain) Replace(chain *Blockchain) error {
 		return err
 	}
 	if c.Len() < chain.Len() {
-		c.chain = chain.chain
+		c.Blocks = chain.Blocks
 	}
 	return nil
+}
+
+func (c *Blockchain) writeLock(f func() error) error {
+	c.Lock()
+	defer c.Unlock()
+	return f()
 }
