@@ -12,8 +12,6 @@ import (
 
 const (
 	EventNewBlock = "block.new"
-
-	QueryChainSync = "chain.sync"
 )
 
 func NewCluster(config *serf.Config, seedNodes ...string) (*Cluster, error) {
@@ -58,23 +56,13 @@ func (p *Cluster) Peers() []serf.Member {
 	return p.serf.Members()
 }
 
-func (p Cluster) ChainFrom(nodeID string) (*blocks.Blockchain, error) {
-	resp, err := p.serf.Query(QueryChainSync, []byte{}, &serf.QueryParam{FilterNodes: []string{nodeID}})
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Close()
-
-	chain := &blocks.Blockchain{}
-	for ns := range resp.ResponseCh() {
-		fmt.Printf("got payload: %x", ns.Payload)
-		//just read the first one and return it
-		if err := json.Unmarshal(ns.Payload, chain); err != nil {
-			return nil, err
+func (p *Cluster) GetPeer(nodeID string) *serf.Member {
+	for _, m := range p.serf.Members() {
+		if m.Name == nodeID {
+			return &m
 		}
-		break
 	}
-	return chain, nil
+	return nil
 }
 
 type BlockEvent struct {

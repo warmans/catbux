@@ -11,14 +11,15 @@ import (
 	"github.com/warmans/catbux/pkg/blocks"
 )
 
-func New(APIAddr string, chain *blocks.Blockchain, cluster *Cluster) *Server {
-	return &Server{addr: APIAddr, chain: chain, cluster: cluster}
+func New(APIAddr string, chain *blocks.Blockchain, cluster *Cluster, tm *TransferManager) *Server {
+	return &Server{addr: APIAddr, chain: chain, cluster: cluster, tm: tm}
 }
 
 type Server struct {
 	addr    string
 	chain   *blocks.Blockchain
 	cluster *Cluster
+	tm      *TransferManager
 }
 
 func (s *Server) Start() error {
@@ -90,16 +91,8 @@ func (s *Server) processEvents() {
 				}
 			}
 		case serf.EventQuery:
-			log.Printf("got a query request")
 			qe := e.(*serf.Query)
-			if qe.Name == QueryChainSync {
-				b, err := json.Marshal(s.chain.Snapshot())
-				if err != nil {
-					log.Printf("error sending chain shapshot: %s", err.Error())
-					return
-				}
-				qe.Respond(b)
-			}
+			log.Printf("got a query request: %s", qe.Name)
 		}
 	}
 }
@@ -116,15 +109,16 @@ func (s *Server) processNewBlockEv(ue serf.UserEvent) error {
 		}
 	}
 	if blockEv.Block.Index > expectedNextBlockIdx {
-		log.Println("require full sync ")
-		if err := s.syncChainFrom(blockEv.NodeID); err != nil {
-			return errors.Wrap(err, "syncing chain failed")
+		log.Println("require full sync from " + blockEv.NodeID)
+		if peer := s.cluster.GetPeer(blockEv.NodeID); peer != nil {
+			if err := s.syncChainFrom(peer); err != nil {
+				return errors.Wrap(err, "syncing chain failed")
+			}
+			log.Println("sync OK")
 		}
 	}
 	return nil
 }
-
-//todo: sync doesn't really work since the max message size is small
 
 func (s *Server) syncChain() error {
 	peers := s.cluster.Peers()
@@ -141,15 +135,11 @@ func (s *Server) syncChain() error {
 	if peer == nil {
 		return nil //no peers
 	}
-	log.Printf("syncing chain from %s", peer.Name)
-	return s.syncChainFrom(peer.Name)
+	return s.syncChainFrom(peer)
 
 }
 
-func (s *Server) syncChainFrom(fromNode string) error {
-	chain, err := s.cluster.ChainFrom(fromNode)
-	if err != nil {
-		return err
-	}
-	return s.chain.Replace(chain)
+func (s *Server) syncChainFrom(peer *serf.Member) error {
+	log.Printf("syncing chain from %s", peer.Name)
+	return s.tm.FetchChain(peer)
 }

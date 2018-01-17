@@ -126,13 +126,15 @@ func (c *Blockchain) Len() int {
 }
 
 func (c *Blockchain) Replace(chain *Blockchain) error {
-	if err := chain.IsValid(); err != nil {
-		return err
-	}
-	if c.Len() < chain.Len() {
-		c.Blocks = chain.Blocks
-	}
-	return nil
+	return c.writeLock(func() error {
+		if err := chain.IsValid(); err != nil {
+			return err
+		}
+		if len(c.Blocks) < chain.Len() {
+			c.Blocks = chain.Blocks
+		}
+		return nil
+	})
 }
 
 func (c *Blockchain) writeLock(f func() error) error {

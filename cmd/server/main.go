@@ -26,28 +26,35 @@ var (
 	httpBindAddr          = flag.String("http-bind", DefaultHTTPBind, "Set the HTTP bind address")
 	clusterBindAddr       = flag.String("cluster-bind-addr", "127.0.0.1", "Set the cluster bind address (if port omitted one is generated)")
 	clusterAdvertisedAddr = flag.String("cluster-advertise-addr", "", "this is the address other nodes can contact this one on. If blank same as bind-addr")
-	seedNodeList          = flag.String("cluster-seed-nodes", "", "address of an existing cluster node(s)")
+	clusterSeedNodes      = flag.String("cluster-seed-nodes", "", "address of an existing cluster node(s)")
+	clusterTransferPort   = flag.Int("cluster-trasfer-port", 0, "whenever a large sync occurs it will use this port instead of the gossip port")
 	nodeID                = flag.String("cluster-node-id", "", "Identifier for the node (leaving blank will generate one)")
 )
 
 func main() {
 	flag.Parse()
 
-	cluster := makeCluster()
-	defer cluster.Close()
+	blockchain := blocks.NewBlockchain()
 
-	srv := server.New(*httpBindAddr, blocks.NewBlockchain(), cluster)
+	cluster, transfers := makeCluster(blockchain)
+	defer func() {
+		cluster.Close()
+		transfers.Close()
+	}()
+
+	srv := server.New(*httpBindAddr, blockchain, cluster, transfers)
 	if err := srv.Start(); err != nil {
 		log.Fatal("server failed: " + err.Error())
 	}
 
+	log.Println("Ready!")
 	terminate := make(chan os.Signal, 1)
 	signal.Notify(terminate, os.Interrupt)
 	<-terminate
 	log.Println("exiting...")
 }
 
-func makeCluster() *server.Cluster {
+func makeCluster(blockchain *blocks.Blockchain) (*server.Cluster, *server.TransferManager) {
 	if *nodeID == "" {
 		*nodeID = mustGetNodeID()
 	}
@@ -57,19 +64,33 @@ func makeCluster() *server.Cluster {
 	if *clusterAdvertisedAddr == "" {
 		*clusterAdvertisedAddr = fmt.Sprintf("%s:%d", bindHost, bindPort)
 	}
+
 	advertiseHost, advertisePort := mustParseAddr(*clusterBindAddr, bindPort)
+
+	for {
+		if *clusterTransferPort == 0 || *clusterTransferPort == bindPort {
+			*clusterTransferPort = mustGetFreePort()
+			break
+		}
+	}
+
+	transfers := server.NewTransferManager(blockchain)
+	go func() {
+		log.Fatal(transfers.Listen(fmt.Sprintf("%s:%d", bindHost, *clusterTransferPort)))
+	}()
 
 	conf := serf.DefaultConfig()
 	conf.Init()
 	conf.NodeName = *nodeID
+	conf.Tags = map[string]string{"transfer.port": fmt.Sprintf("%d", *clusterTransferPort)}
 	conf.MemberlistConfig.BindAddr = bindHost
 	conf.MemberlistConfig.BindPort = bindPort
 	conf.MemberlistConfig.AdvertiseAddr = advertiseHost
 	conf.MemberlistConfig.AdvertisePort = advertisePort
 
 	seedNodes := []string{}
-	if *seedNodeList != "" {
-		seedNodes = strings.Split(*seedNodeList, ",")
+	if *clusterSeedNodes != "" {
+		seedNodes = strings.Split(*clusterSeedNodes, ",")
 	}
 
 	cluster, err := server.NewCluster(conf, seedNodes...)
@@ -78,7 +99,7 @@ func makeCluster() *server.Cluster {
 	}
 	log.Printf("Cluster created on: %s:%d", conf.MemberlistConfig.BindAddr, conf.MemberlistConfig.BindPort)
 
-	return cluster
+	return cluster, transfers
 }
 
 func mustGetFreePort() int {
