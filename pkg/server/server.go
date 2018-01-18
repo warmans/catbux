@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/hashicorp/serf/serf"
 	"github.com/pkg/errors"
@@ -61,12 +62,25 @@ func (s *Server) handleMine(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	block, err := s.chain.NewBlock(string(data))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+
+	//create a new block to be mined
+	newBlock := &blocks.Block{
+		Index:      int64(s.chain.Len()),
+		PrevHash:   s.chain.Last().Hash,
+		Timestamp:  time.Now(),
+		Data:       string(data),
+		Difficulty: s.chain.GetCurrentDifficulty(),
+	}
+
+	//mine the block + keep the hash in line with the block content
+	blocks.FindNonce(newBlock)
+
+	if err := s.chain.Append(newBlock); err != nil {
+		http.Error(w, errors.Wrap(err, "node found but could not be appended to chain").Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := s.cluster.Broadcast(&BlockEvent{EventNewBlock, block, s.cluster.serf.LocalMember().Name}); err != nil {
+
+	if err := s.cluster.Broadcast(&BlockEvent{EventNewBlock, newBlock, s.cluster.serf.LocalMember().Name}); err != nil {
 		log.Printf("failed to broadcast new block: %s", err.Error())
 	}
 	s.handleBlocks(w, r)
@@ -101,6 +115,9 @@ func (s *Server) processNewBlockEv(ue serf.UserEvent) error {
 	blockEv := &BlockEvent{}
 	if err := json.Unmarshal(ue.Payload, blockEv); err != nil {
 		return errors.Wrap(err, "decode failed")
+	}
+	if blockEv.NodeID == s.cluster.serf.LocalMember().Name {
+		return nil
 	}
 	expectedNextBlockIdx := s.chain.Last().Index + 1
 	if blockEv.Block.Index == expectedNextBlockIdx {
