@@ -3,6 +3,7 @@ package blocks
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -21,24 +22,26 @@ const (
 )
 
 type Block struct {
-	Index      int64     `json:"index"`
-	Hash       string    `json:"hash"`
-	PrevHash   string    `json:"prev_hash"`
-	Timestamp  time.Time `json:"timestamp"`
-	Difficulty int       `json:"difficulty"`
-	Nonce      int       `json:"nonce"`
-	Data       string    `json:"data"`
+	Index      int64          `json:"index"`
+	Hash       string         `json:"hash"`
+	PrevHash   string         `json:"prev_hash"`
+	Timestamp  time.Time      `json:"timestamp"`
+	Difficulty int            `json:"difficulty"`
+	Nonce      int            `json:"nonce"`
+	Data       []*Transaction `json:"data"`
 }
 
-func Hash(b *Block) string {
+func Hash(b *Block) (string, error) {
 	hash := sha256.New()
 	fmt.Fprintf(hash, "%d", b.Index)
 	fmt.Fprintf(hash, "%s", b.PrevHash)
 	fmt.Fprintf(hash, "%s", b.Timestamp.Format(time.RFC3339Nano))
 	fmt.Fprintf(hash, "%d", b.Difficulty)
 	fmt.Fprintf(hash, "%d", b.Nonce)
-	fmt.Fprintf(hash, "%s", b.Data)
-	return base64.URLEncoding.EncodeToString(hash.Sum(nil))
+	if err := json.NewEncoder(hash).Encode(b.Data); err != nil {
+		return "", err
+	}
+	return base64.URLEncoding.EncodeToString(hash.Sum(nil)), nil
 }
 
 func IsValidBlock(newBlock, prevBlock *Block) error {
@@ -50,8 +53,12 @@ func IsValidBlock(newBlock, prevBlock *Block) error {
 	if prevBlock.Hash != newBlock.PrevHash {
 		return fmt.Errorf("preceeding hash was wrong: expected %s got %s", prevBlock.Hash, newBlock.PrevHash)
 	}
-	// hash is generally valid for the content
-	if blockHash := Hash(newBlock); blockHash != newBlock.Hash {
+	// hash matches content
+	blockHash, err := Hash(newBlock)
+	if err != nil {
+		return err
+	}
+	if blockHash != newBlock.Hash {
 		return fmt.Errorf("block hash was wrong: expected %s got %s", blockHash, newBlock.Hash)
 	}
 	// timestamp is more-or-less ok
@@ -65,18 +72,23 @@ func IsValidBlock(newBlock, prevBlock *Block) error {
 	return nil
 }
 
-func FindNonce(block *Block) {
+func FindNonce(block *Block) error {
 	start := time.Now()
 	defer func() {
 		log.Printf("Found block nonce %d in %0.2f seconds", block.Nonce, time.Since(start).Seconds())
 	}()
 	for {
-		block.Hash = Hash(block)
+		var err error
+		block.Hash, err = Hash(block)
+		if err != nil {
+			return err
+		}
 		if err := hashMatchesDifficulty(block.Hash, block.Difficulty); err == nil {
-			return
+			return err
 		}
 		block.Nonce++
 	}
+	return nil
 }
 
 func hashMatchesDifficulty(hash string, difficulty int) error {

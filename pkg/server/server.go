@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"time"
@@ -57,23 +56,21 @@ func (s *Server) handleBlocks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMine(w http.ResponseWriter, r *http.Request) {
-	data, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
 
 	//create a new block to be mined
 	newBlock := &blocks.Block{
-		Index:      int64(s.chain.Len()),
-		PrevHash:   s.chain.Last().Hash,
-		Timestamp:  time.Now(),
-		Data:       string(data),
+		Index:     int64(s.chain.Len()),
+		PrevHash:  s.chain.Last().Hash,
+		Timestamp: time.Now(),
+		//Data:       string(data),
 		Difficulty: s.chain.GetCurrentDifficulty(),
 	}
 
 	//mine the block + keep the hash in line with the block content
-	blocks.FindNonce(newBlock)
+	if err := blocks.FindNonce(newBlock); err != nil {
+		http.Error(w, errors.Wrap(err, "failed finding nonce").Error(), http.StatusInternalServerError)
+		return
+	}
 
 	if err := s.chain.Append(newBlock); err != nil {
 		http.Error(w, errors.Wrap(err, "node found but could not be appended to chain").Error(), http.StatusInternalServerError)
